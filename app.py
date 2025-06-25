@@ -220,16 +220,42 @@ def perform_full_audit(url):
             with sync_playwright() as p:
                 browser = p.chromium.launch(
                     headless=True,
-                    args=['--no-sandbox', '--disable-dev-shm-usage']
+                    args=[
+                        '--no-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-gpu',
+                        '--disable-web-security',
+                        '--disable-features=VizDisplayCompositor',
+                        '--no-first-run',
+                        '--no-default-browser-check',
+                        '--disable-extensions'
+                    ]
                 )
-                page = browser.new_page()
+                context = browser.new_context(
+                    viewport={'width': 1280, 'height': 720},
+                    user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                )
+                page = context.new_page()
                 page.goto(url, wait_until='networkidle', timeout=60000)
                 page_content = page.content()
+                context.close()
                 browser.close()
             soup = BeautifulSoup(page_content, 'html.parser')
         except Exception as e:
             st.error(f"Failed to load the page with Playwright: {e}")
-            return None
+            st.error("This might be due to browser installation issues in the deployment environment.")
+            # Fallback to requests for basic content
+            try:
+                st.info("Attempting fallback method...")
+                response = requests.get(url, timeout=30, headers={
+                    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+                })
+                page_content = response.text
+                soup = BeautifulSoup(page_content, 'html.parser')
+                st.warning("Using simplified content fetching. Some dynamic content may be missing.")
+            except Exception as fallback_error:
+                st.error(f"Fallback method also failed: {fallback_error}")
+                return None
 
         status.update(label="Running Lighthouse audits (Desktop & Mobile)...")
         all_data['performance'] = run_lighthouse_audits(url)
