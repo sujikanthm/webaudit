@@ -1,6 +1,7 @@
 streamlit
+openai
 playwright
 beautifulsoup4
-requests
-openai
 pandas
+requests
+lxml

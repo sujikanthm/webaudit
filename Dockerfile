@@ -1,40 +1,56 @@
-# Step 1: Base image
+# Use Python 3.11 slim image for smaller size
 FROM python:3.11-slim
 
-# Step 2: Install system dependencies
+# Install system dependencies needed for Chrome/Lighthouse and build tools
 RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
+    wget \
+    unzip \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Step 3: Install Node.js
+# Install Node.js (required for Lighthouse)
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y nodejs
 
-# Step 4: Set the working directory
+# Install Google Chrome (required for Lighthouse and Playwright)
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
 WORKDIR /app
 
-# --- OPTIMIZATION START ---
-# Step 5: Copy ONLY the files needed for dependency installation first.
-# This allows Docker to cache these layers even if the app code changes.
-COPY requirements.txt .
+# Copy requirements first for better caching
+COPY requirements.txt ./
 
-# Step 6: Install Python dependencies
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Step 7: Install Lighthouse and Playwright browsers
-# This layer will also be cached as long as requirements.txt doesn't change.
-RUN npm install -g lighthouse \
-    && python -m playwright install --with-deps
+# Install Lighthouse globally
+RUN npm install -g lighthouse
 
-# Step 8: NOW, copy the rest of the application code.
-# This ensures that changes to app.py only invalidate this layer and the ones after it.
-COPY . .
-# --- OPTIMIZATION END ---
+# Install Playwright and browsers
+RUN python -m playwright install-deps \
+    && python -m playwright install chromium
 
-# Step 9: Expose the Streamlit port
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Copy application code
+COPY --chown=appuser:appuser . ./
+
+# Expose port (Railway will set PORT environment variable)
 EXPOSE 8501
 
-# Step 10: Define the command to run when the container starts
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Health check for Railway
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+
+# Command to run the application
+# Railway sets PORT env var, so we use it with fallback to 8501
+CMD streamlit run app.py --server.port=${PORT:-8501} --server.address=0.0.0.0 --server.headless=true --server.enableCORS=false --server.enableXsrfProtection=false

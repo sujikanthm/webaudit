@@ -39,7 +39,7 @@ def run_single_lighthouse_audit(url, device='desktop'):
         "--output=json",
         "--output-path=stdout",
         "--only-categories=performance,seo,accessibility,best-practices",
-        "--chrome-flags=--headless --no-sandbox",
+        "--chrome-flags=--headless --no-sandbox --disable-dev-shm-usage",
     ]
 
     # The default lighthouse run is mobile. We only need to add a flag for desktop.
@@ -65,7 +65,11 @@ def run_single_lighthouse_audit(url, device='desktop'):
         st.code(f"Error details from Lighthouse:\n{e.stderr}", language="bash")
         return {"error": str(e), "stderr": e.stderr}
 
-    report = json.loads(result.stdout)
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as e:
+        st.error(f"Failed to parse Lighthouse JSON output for {device}")
+        return {"error": f"JSON parsing error: {str(e)}"}
     
     audits = report.get('audits', {})
     categories = report.get('categories', {})
@@ -73,11 +77,15 @@ def run_single_lighthouse_audit(url, device='desktop'):
     def get_metric(metric_id):
         return audits.get(metric_id, {}).get('displayValue', 'N/A')
 
+    def get_score(category_name):
+        score = categories.get(category_name, {}).get('score')
+        return f"{score * 100:.0f}" if score is not None else "0"
+
     return {
-        "performance_score": f"{categories.get('performance', {}).get('score', 0) * 100:.0f}",
-        "seo_score": f"{categories.get('seo', {}).get('score', 0) * 100:.0f}",
-        "accessibility_score": f"{categories.get('accessibility', {}).get('score', 0) * 100:.0f}",
-        "best_practices_score": f"{categories.get('best-practices', {}).get('score', 0) * 100:.0f}",
+        "performance_score": get_score('performance'),
+        "seo_score": get_score('seo'),
+        "accessibility_score": get_score('accessibility'),
+        "best_practices_score": get_score('best-practices'),
         "metrics": {
             'First Contentful Paint': get_metric('first-contentful-paint'),
             'Largest Contentful Paint': get_metric('largest-contentful-paint'),
@@ -110,13 +118,13 @@ def analyze_seo(soup):
     
     return {
         "title": {
-            "text": title.text if title else "Not Found",
-            "length": len(title.text) if title else 0
+            "text": title.text.strip() if title else "Not Found",
+            "length": len(title.text.strip()) if title else 0
         },
         "meta_description": {
             "present": bool(desc),
-            "text": desc['content'] if desc else "Not Found",
-            "length": len(desc['content']) if desc else 0
+            "text": desc.get('content', '').strip() if desc else "Not Found",
+            "length": len(desc.get('content', '').strip()) if desc else 0
         },
         "headings": {
             "h1": len(soup.find_all('h1')),
@@ -136,15 +144,19 @@ def analyze_technical(soup, url, page_content):
     st.write("⚙️ Analyzing technical features...")
     
     try:
-        robots_ok = requests.get(urljoin(url, '/robots.txt'), timeout=5).ok
+        robots_response = requests.get(urljoin(url, '/robots.txt'), timeout=5)
+        robots_ok = robots_response.status_code == 200
     except requests.RequestException:
         robots_ok = False
 
+    # Fixed regex for phone number detection
+    phone_pattern = r'(\+\d{1,3}[-.\s]?)?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}'
+    
     return {
         "https_enabled": {"value": url.startswith('https://'), "status": "✅" if url.startswith('https://') else "❌"},
         "has_contact_page": {"value": bool(soup.find('a', href=re.compile(r'contact', re.I))), "status": "✅" if bool(soup.find('a', href=re.compile(r'contact', re.I))) else "⚠️"},
         "has_email": {"value": bool(re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_content)), "status": "✅" if bool(re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_content)) else "⚠️"},
-        "has_phone": {"value": bool(re.search(r'(\+\d{1,3}[-.\s]?)?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}', page_content)), "status": "✅" if bool(re.search(r'(\+\d{1,3}[-.\s]?)?\(?\d{1,4}\)?[-.\s]?d{1,4}[-.\s]?d{1,9}', page_content)) else "⚠️"},
+        "has_phone": {"value": bool(re.search(phone_pattern, page_content)), "status": "✅" if bool(re.search(phone_pattern, page_content)) else "⚠️"},
         "has_privacy_link": {"value": bool(soup.find('a', href=re.compile(r'privacy', re.I))), "status": "✅" if bool(soup.find('a', href=re.compile(r'privacy', re.I))) else "❌"},
         "has_robots_txt": {"value": robots_ok, "status": "✅" if robots_ok else "⚠️"}
     }
@@ -156,6 +168,7 @@ def generate_recommendations(audit_data):
     
     st.write("🧠 Generating AI recommendations...")
 
+    # Create a deep copy and remove full_report to reduce payload size
     data_for_prompt = copy.deepcopy(audit_data)
 
     if data_for_prompt.get('performance'):
@@ -180,14 +193,18 @@ def generate_recommendations(audit_data):
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "You are a web performance and SEO expert providing actionable advice."}, {"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": "You are a web performance and SEO expert providing actionable advice."}, 
+                {"role": "user", "content": prompt}
+            ],
             response_format={"type": "json_object"},
             temperature=0.6,
+            max_tokens=2000
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
         if "rate_limit_exceeded" in str(e) or "Request too large" in str(e):
-             st.error(f"AI request failed: The audit data is still too large for the model's token limit.")
+            st.error(f"AI request failed: The audit data is still too large for the model's token limit.")
         else:
             st.error(f"Failed to get AI recommendations: {e}")
         return {"summary": "Error generating recommendations.", "actionItems": []}
@@ -201,7 +218,10 @@ def perform_full_audit(url):
         status.update(label="Fetching page content with Playwright...")
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-dev-shm-usage']
+                )
                 page = browser.new_page()
                 page.goto(url, wait_until='networkidle', timeout=60000)
                 page_content = page.content()
@@ -233,6 +253,7 @@ def display_performance_card(device_name, perf_data):
     
     if perf_data.get("error"):
         st.error(f"Could not retrieve {device_name} performance data.")
+        st.write(f"Error details: {perf_data.get('error', 'Unknown error')}")
         return
 
     cols = st.columns(4)
@@ -243,11 +264,18 @@ def display_performance_card(device_name, perf_data):
 
     st.markdown("##### Core Web Vitals & Metrics")
     vitals = perf_data.get("metrics", {})
-    df = pd.DataFrame.from_dict(vitals, orient='index', columns=['Value'])
-    st.table(df)
+    if vitals:
+        df = pd.DataFrame.from_dict(vitals, orient='index', columns=['Value'])
+        st.table(df)
+    else:
+        st.write("No metrics data available.")
     
     with st.expander("View Full Lighthouse JSON Report"):
-        st.json(perf_data.get("full_report", {}))
+        full_report = perf_data.get("full_report", {})
+        if full_report:
+            st.json(full_report)
+        else:
+            st.write("No full report available.")
 
 # --- Streamlit Main UI ---
 st.title("🚀 AI Website Auditor Pro")
@@ -271,8 +299,12 @@ if st.button("Analyze Website", type="primary"):
             st.info(recs.get('summary', "No summary available."), icon="💡")
             
             st.subheader("Top Action Items")
-            for i, item in enumerate(recs.get('actionItems', [])):
-                st.markdown(f"**{i+1}.** {item}")
+            action_items = recs.get('actionItems', [])
+            if action_items:
+                for i, item in enumerate(action_items):
+                    st.markdown(f"**{i+1}.** {item}")
+            else:
+                st.write("No action items available.")
             st.divider()
 
             tab1, tab2, tab3 = st.tabs(["📊 Performance Audit", "🔎 SEO Analysis", "⚙️ Technical Checklist"])
@@ -286,15 +318,22 @@ if st.button("Analyze Website", type="primary"):
                         display_performance_card("Mobile", perf.get('mobile', {}))
                 else:
                     st.error("Performance audit could not be completed.")
+                    if perf.get("error"):
+                        st.write(f"Error: {perf['error']}")
 
             with tab2:
                 st.subheader("On-Page SEO Factors")
                 if seo:
                     c1, c2 = st.columns(2)
-                    c1.metric("Title Tag Length", f"{seo['title']['length']} characters", "60" if seo['title']['length'] <= 60 else "-10")
+                    title_length = seo['title']['length']
+                    desc_length = seo['meta_description']['length']
+                    
+                    c1.metric("Title Tag Length", f"{title_length} characters", 
+                             "Good" if title_length <= 60 else "Too Long")
                     c1.write(f"**Title:** {seo['title']['text']}")
                     
-                    c2.metric("Meta Description Length", f"{seo['meta_description']['length']} characters", "160" if seo['meta_description']['length'] <= 160 else "-20")
+                    c2.metric("Meta Description Length", f"{desc_length} characters", 
+                             "Good" if desc_length <= 160 else "Too Long")
                     c2.write(f"**Description:** {seo['meta_description']['text']}")
                     
                     st.divider()
@@ -306,8 +345,13 @@ if st.button("Analyze Website", type="primary"):
                     c3.dataframe(heading_df)
 
                     c4.write("##### Image SEO")
-                    c4.metric("Images Missing Alt Text", f"{seo['images']['missing_alt']} / {seo['images']['total']}", f"-{seo['images']['missing_alt']}")
-                    c4.progress(float(seo['images']['coverage_percent']) / 100, text=f"{seo['images']['coverage_percent']}% Alt Text Coverage")
+                    missing_alt = seo['images']['missing_alt']
+                    total_images = seo['images']['total']
+                    coverage_percent = float(seo['images']['coverage_percent'])
+                    
+                    c4.metric("Images Missing Alt Text", f"{missing_alt} / {total_images}", 
+                             "Good" if missing_alt == 0 else "Needs Improvement")
+                    c4.progress(coverage_percent / 100, text=f"{coverage_percent:.1f}% Alt Text Coverage")
 
             with tab3:
                 st.subheader("Technical & Setup Checklist")
@@ -322,3 +366,5 @@ if st.button("Analyze Website", type="primary"):
                     ]
                     df_tech = pd.DataFrame(tech_items)
                     st.dataframe(df_tech, use_container_width=True)
+        else:
+            st.error("Failed to complete the audit. Please check the URL and try again.")
