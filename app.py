@@ -11,6 +11,7 @@ from openai import OpenAI
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
+import bootstrap
 
 # --- Configuration & Initialization ---
 st.set_page_config(
