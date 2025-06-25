@@ -13,41 +13,40 @@ def install():
     """
     print("--- Starting one-time setup ---")
     
-    # Install Lighthouse globally using npm
-    print("Installing Lighthouse...")
-    # Using shell=True is often necessary for npm global installs in non-interactive environments
     try:
+        # Install Lighthouse globally using npm
+        print("COMMAND: npm install -g lighthouse")
         subprocess.run(
             "npm install -g lighthouse",
-            shell=True,
+            shell=True,  # shell=True is often necessary for npm
             check=True,
             stdout=sys.stdout,
             stderr=sys.stderr
         )
-        print("Lighthouse installed successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error installing Lighthouse: {e}")
-        # Decide if you want to exit or continue
-        # sys.exit(1) 
+        print("--- Lighthouse installed successfully ---")
 
-    # Install Playwright browsers
-    print("Installing Playwright browsers...")
-    try:
+        # Install Playwright browsers using the Python module invocation
+        print("COMMAND: python -m playwright install")
         subprocess.run(
-            "playwright install",
-            shell=True,
+            [sys.executable, "-m", "playwright", "install"],  # <-- THIS IS THE KEY CHANGE
             check=True,
             stdout=sys.stdout,
             stderr=sys.stderr
         )
-        print("Playwright browsers installed successfully.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error installing Playwright browsers: {e}")
-        # sys.exit(1)
+        print("--- Playwright browsers installed successfully ---")
 
-    # Create the flag file to indicate setup is done
-    setup_complete_flag.touch()
-    print("--- One-time setup complete ---")
+        # Create the flag file to indicate setup is done
+        setup_complete_flag.touch()
+        print("--- One-time setup complete, flag file created ---")
+
+    except subprocess.CalledProcessError as e:
+        print(f"!!! SETUP FAILED: A command returned a non-zero exit code: {e.returncode} !!!", file=sys.stderr)
+        print(f"!!! Command was: {e.cmd} !!!", file=sys.stderr)
+        # Exit with a non-zero code to make the Streamlit deployment fail loudly
+        sys.exit(1)
+    except Exception as e:
+        print(f"!!! SETUP FAILED: An unexpected error occurred: {e} !!!", file=sys.stderr)
+        sys.exit(1)
 
 def run_setup():
     """
@@ -56,4 +55,4 @@ def run_setup():
     if not setup_complete_flag.exists():
         install()
     else:
-        print("Setup has already been completed. Skipping.")
+        print("--- Setup has already been completed. Skipping. ---")
